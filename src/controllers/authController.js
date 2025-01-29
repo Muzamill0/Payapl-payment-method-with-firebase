@@ -1,134 +1,67 @@
-const jwt = require('jsonwebtoken');
+const conn = require('../config/db');
 const bcrypt = require('bcrypt');
-const dayjs = require('dayjs');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
-const { User, Token }  = require('../models');
 
 const login = async (req, res) => {
   const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(200).json({
+      status: 'fail',
+      message: 'Invalid email or password',
+    });
+  }
 
   try {
-    const userData = await User.findOne({
-      attributes: ['user_id', 'user_email', 'user_password', 'user_name', 'user_type', 'user_status'],
-      where: { user_email: email },
-    });
+    const sql = `SELECT * FROM users WHERE email = ?`;
+    const [rows] = await conn.query(sql, [email]);
 
-    if (!userData) {
+    if (rows.length === 0) {
       return res.status(400).json({
         status: 'fail',
         message: 'Invalid email or password',
       });
-    };
-    if (userData.user_status === 0) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'User against this email is blocked',
-      });
-    };
+    }
 
-    const storedHashedPassword = userData.user_password;
+    const user = rows[0];
+    const storedHashedPassword = user.password;
     const isMatch = await bcrypt.compare(password, storedHashedPassword);
 
     if (isMatch) {
       const SECRET_KEY = process.env.JWT_SECRET;
       const token = jwt.sign(
         {
-          userId: userData.user_id,
-          email: userData.user_email,
-          name: userData.user_name,
-          type: userData.user_type,
+          userId: user.id,
+          email: user.email,
+          name: user.name,
+          type: user.type,
         },
         SECRET_KEY,
         { expiresIn: '1d' },
       );
-
-      await Token.upsert({
-        user_id: userData.user_id,
-        token: token,
-        updated_at: dayjs().format('YYYY-MM-DD HH:mm:ss'),
-      });
-
-      res.status(200).json({
-        status: 'success',
-        message: 'Login successful',
-        token,
-      });
-    } else {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Something went wrong',
-      });
-    }
-
-  } catch (error) {
-    res.status(500).json({
-      status: 'fail',
-      message: 'Something went wrong',
-    });
-  }
-};
-const register = async (req, res) => {
-  const { userName, userEmail, userPassword, userMobile, userAddress } = req.body;
-  const userIP = req.ip;
-
-  try {
-    const existingUser = await User.findOne({
-      attributes:['user_email'],
-      where: {
-        user_email: userEmail
+      const tokenSql = `INSERT INTO tokens (user_id, token) VALUES (?, ?) ON DUPLICATE KEY UPDATE token = VALUES(token)`;
+      const [insertResult] = await conn.query(tokenSql, [user.id, token]);
+      if (insertResult.affectedRows > 0) {
+          res.status(200).json({
+          status: 'success',
+          message: 'Login successful',
+          token,
+        });
+      } else {
+        res.status(500).json({
+          status: 'fail',
+          message: 'Failed to store token',
+        });
       }
-    });
-
-    if (existingUser) {
-      return res.status(400).json({
-        message: 'Email already registered!'
-      });
     }
-
-    const hashedPassword = await bcrypt.hash(userPassword, 10);
-
-    const newUser = await User.create({
-      user_name: userName,
-      user_email: userEmail,
-      user_password: hashedPassword,
-      user_mobile: userMobile,
-      user_address: userAddress,
-      user_ip: userIP
-    });
-    res.status(201).json({
-      status: 'success',
-      message: 'User registered successfully!',
-    });
-
-  } catch (error) {
-    res.status(500).json({
-      message: 'Error registering user',
-      error: error.message,
-    });
-  }
-};
-
-const logout = async (req, res) => {
-  const token = req.headers['authorization'].split(' ')[1];
-  try {
-    await Token.destroy({
-      where: { token: token }
-    });
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Logout successful',
-    });
   } catch (error) {
     res.status(500).json({
       status: 'fail',
-      message: 'Error logging out',
+      message: 'Internal server error',
     });
   }
 };
 
 module.exports = {
   login,
-  register,
-  logout,
 };
